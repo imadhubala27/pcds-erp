@@ -194,6 +194,10 @@ app_license = "mit"
 
 # ignore_links_on_delete = ["Communication", "ToDo"]
 
+# CORS: allow React frontend (e.g. Vite dev server) to call ERP APIs
+# Use allow_cors = "*" for development or list specific origins, e.g. ["http://localhost:5173"]
+allow_cors = "*"
+
 # Request Events
 # ----------------
 # before_request = ["ndis_erp.utils.before_request"]

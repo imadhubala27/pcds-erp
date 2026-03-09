@@ -1,0 +1,267 @@
+# -*- coding: utf-8 -*-
+# Copyright (c) 2025, ndis_erp and contributors
+# For license information, please see license.txt
+"""
+ndis_erp API – whitelisted endpoints for the React frontend.
+Module path: ndis_erp.ndis_erp.api (api.py lives in ndis_erp/ndis_erp/ndis_erp/)
+"""
+
+from __future__ import unicode_literals
+
+import re
+import frappe
+
+
+# ---------------------------------------------------------------------------
+# Test & health
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist(allow_guest=True)
+def test_connection():
+	"""Test endpoint to verify the React frontend can reach the ERP API."""
+	try:
+		frappe.logger().info("ndis_erp test_connection called")
+		return {
+			"status": "success",
+			"message": "ERP API connected",
+			"timestamp": frappe.utils.now(),
+			"server": "ndis_erp",
+		}
+	except Exception as e:
+		frappe.logger().error("test_connection failed: %s", str(e))
+		return {
+			"status": "error",
+			"message": str(e),
+		}
+
+
+# ---------------------------------------------------------------------------
+# Website settings (navbar logo, footer logo, address, company contact)
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist(allow_guest=True)
+def get_website_settings():
+	"""
+	Fetch Website Settings and Company data for the React frontend.
+	Returns: app_logo, footer_logo, address (from Website Settings),
+	         phone_no, email (from default Company).
+	"""
+	try:
+		frappe.set_user("Guest")
+		frappe.local.flags.ignore_permissions = True
+
+		settings = frappe.get_single("Website Settings")
+		app_logo = getattr(settings, "app_logo", None) or getattr(settings, "logo", None) or getattr(settings, "banner_image", None) or ""
+		footer_logo = getattr(settings, "footer_logo", None) or ""
+		address = getattr(settings, "address", None) or ""
+
+		default_company = frappe.get_cached_value("Global Defaults", None, "default_company")
+		phone_no = ""
+		email = ""
+		if default_company:
+			company = frappe.get_cached_value(
+				"Company",
+				default_company,
+				["phone_no", "email"],
+				as_dict=True
+			)
+			if company:
+				phone_no = company.get("phone_no") or ""
+				email = company.get("email") or ""
+
+		return {
+			"success": True,
+			"app_logo": app_logo,
+			"footer_logo": footer_logo,
+			"address": address,
+			"phone_no": phone_no,
+			"email": email,
+		}
+	except Exception as e:
+		frappe.log_error(frappe.get_traceback(), "Get Website Settings API")
+		frappe.logger().error("get_website_settings failed: %s", str(e))
+		return {
+			"success": False,
+			"error": str(e),
+			"app_logo": "",
+			"footer_logo": "",
+			"address": "",
+			"phone_no": "",
+			"email": "",
+		}
+
+
+# ---------------------------------------------------------------------------
+# Signup (create Lead + User for website)
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist(allow_guest=True)
+def signup(**kwargs):
+	"""
+	Create a Lead and User for website signup only if not created earlier.
+	- If User already exists: return error (already registered).
+	- If Lead exists but User does not: create only User.
+	- If neither exists: create Lead then User.
+	Required: full_name, email, password.
+	"""
+	try:
+		data = kwargs or {}
+		required = ["full_name", "email", "password"]
+		for field in required:
+			if not data.get(field):
+				return {"success": False, "error": f"{field.replace('_', ' ').title()} is required"}
+
+		email = data.get("email", "").strip().lower()
+		if not re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", email):
+			return {"success": False, "error": "Invalid email format"}
+
+		password = data.get("password", "")
+		if len(password) < 6:
+			return {"success": False, "error": "Password must be at least 6 characters long"}
+
+		if frappe.db.exists("User", email):
+			return {"success": False, "error": "An account with this email already exists. Please sign in."}
+
+		lead_name = data.get("full_name", "").strip()
+		phone = (data.get("phone") or "").strip()
+		company = frappe.defaults.get_user_default("Company") or frappe.db.get_single_value("Global Defaults", "default_company")
+		lead_doc = None
+
+		# Create Lead only if not created earlier (no Lead with this email)
+		if not frappe.db.exists("Lead", {"email_id": email}):
+			lead_doc = frappe.get_doc({
+				"doctype": "Lead",
+				"lead_name": lead_name,
+				"email_id": email,
+				"mobile_no": phone,
+				"phone": phone,
+				"status": "Lead",
+				"territory": "All Territories",
+				"company": company,
+			})
+			lead_doc.insert(ignore_permissions=True)
+
+		name_parts = lead_name.split()
+		first_name = name_parts[0] if name_parts else "User"
+		last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+
+		user_doc = frappe.get_doc({
+			"doctype": "User",
+			"email": email,
+			"first_name": first_name,
+			"last_name": last_name,
+			"enabled": 1,
+			"user_type": "Website User",
+			"send_welcome_email": 0,
+			"mobile_no": phone,
+			"new_password": password,
+		})
+		user_doc.insert(ignore_permissions=True)
+		try:
+			user_doc.add_roles("Customer")
+		except Exception:
+			pass
+		if lead_doc:
+			try:
+				lead_doc.add_comment("Comment", f"User account created: {email}")
+			except Exception:
+				pass
+
+		frappe.db.commit()
+		lead_info = None
+		if lead_doc:
+			lead_info = {"name": lead_doc.name, "lead_name": lead_doc.lead_name, "email": lead_doc.email_id, "phone": lead_doc.mobile_no, "status": lead_doc.status}
+		return {
+			"success": True,
+			"message": "Account created successfully",
+			"lead": lead_info,
+		}
+	except frappe.ValidationError as e:
+		frappe.db.rollback()
+		return {"success": False, "error": str(e)}
+	except Exception as e:
+		frappe.db.rollback()
+		frappe.log_error(frappe.get_traceback(), "Signup API")
+		return {"success": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Forgot password – send reset link email
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist(allow_guest=True)
+def forgot_password(email):
+	"""Send password reset email with link to /pcds#/reset-password?key=..."""
+	try:
+		if not email:
+			return {"success": False, "error": "Email is required"}
+		email = email.strip().lower()
+		if not re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", email):
+			return {"success": False, "error": "Invalid email format"}
+
+		if not frappe.db.exists("User", email):
+			return {"success": True, "message": "If this email is registered, you will receive a password reset link shortly."}
+
+		user = frappe.get_doc("User", email)
+		if not user.enabled:
+			return {"success": False, "error": "Your account has been disabled. Please contact support."}
+
+		reset_key = frappe.utils.random_string(32)
+		user.reset_password_key = reset_key
+		user.last_reset_password_key_generated_on = frappe.utils.now_datetime()
+		user.save(ignore_permissions=True)
+		frappe.db.commit()
+
+		base_url = (frappe.local.conf.get("base_url") or "http://127.0.0.1:8007").rstrip("/")
+		reset_link = f"{base_url}/pcds#/reset-password?key={reset_key}"
+
+		subject = "Password Reset - Perfection Care Disability Services"
+		message = f"""
+		<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+			<h2 style="color: #333; border-bottom: 2px solid #4CAF50; padding-bottom: 10px;">Password Reset Request</h2>
+			<p>Hello {user.first_name or 'User'},</p>
+			<p>We received a request to reset your password for your Perfection Care account.</p>
+			<p>Click the link below to reset your password:</p>
+			<p><a href="{reset_link}" style="background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">Reset Password</a></p>
+			<p style="word-break: break-all; background: #f5f5f5; padding: 10px; color: #666;">{reset_link}</p>
+			<p style="color: #999; font-size: 12px;">If you did not request this, please ignore this email. This link will expire in 24 hours.</p>
+		</div>
+		"""
+		frappe.sendmail(recipients=[email], subject=subject, message=message, delayed=False)
+		return {"success": True, "message": "Password reset link has been sent to your email. Please check your inbox."}
+	except Exception as e:
+		frappe.log_error(frappe.get_traceback(), "Forgot Password API")
+		return {"success": True, "message": "If this email is registered, you will receive a password reset link shortly."}
+
+
+# ---------------------------------------------------------------------------
+# Reset password – key + new password
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist(allow_guest=True)
+def reset_password(key, new_password):
+	"""Reset user password using the key from the email link."""
+	if not key or not new_password:
+		return {"success": False, "error": "Key and new password are required"}
+	if len(new_password) < 6:
+		return {"success": False, "error": "Password must be at least 6 characters long"}
+
+	user = frappe.db.get_value(
+		"User",
+		{"reset_password_key": key},
+		["name"],
+		as_dict=True,
+	)
+	if not user:
+		return {"success": False, "error": "Invalid or expired reset link"}
+
+	try:
+		from frappe.utils.password import update_password
+		update_password(user.name, new_password)
+		frappe.db.set_value("User", user.name, "reset_password_key", None)
+		frappe.db.commit()
+		return {"success": True, "message": "Password has been reset successfully"}
+	except Exception as e:
+		frappe.db.rollback()
+		frappe.log_error(frappe.get_traceback(), "Reset Password API")
+		return {"success": False, "error": str(e)}
