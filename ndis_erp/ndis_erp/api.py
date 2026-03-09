@@ -8,6 +8,7 @@ Module path: ndis_erp.ndis_erp.api (api.py lives in ndis_erp/ndis_erp/ndis_erp/)
 
 from __future__ import unicode_literals
 
+import json
 import re
 import frappe
 
@@ -89,6 +90,202 @@ def get_website_settings():
 			"phone_no": "",
 			"email": "",
 		}
+
+
+# ---------------------------------------------------------------------------
+# Home page builder (Page Building Blocks – same as get_home_page_builder?route=home)
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist(allow_guest=True)
+def get_home_page_builder(route="home"):
+	"""
+	Fetch Web Page by route (e.g. home) and return Page Building Blocks.
+	Same pattern as krishna_royal_club get_home_page_builder.
+	Returns: { "success": True, "data": [ { "web_template", "values", "background_image", "add_background_image" }, ... ], "count": N }
+	"""
+	try:
+		frappe.set_user("Guest")
+		frappe.local.flags.ignore_permissions = True
+
+		names = frappe.get_all(
+			"Web Page",
+			filters={"route": route, "published": 1},
+			limit=1,
+		)
+		if not names:
+			return {"success": True, "data": [], "count": 0}
+
+		page = frappe.get_doc("Web Page", names[0].name)
+		data = []
+
+		# Page Building Blocks: can be page_blocks (standard) or blocks
+		blocks = getattr(page, "page_blocks", None) or getattr(page, "blocks", None) or []
+		for row in blocks:
+			values = getattr(row, "web_template_values", None) or getattr(row, "values", None) or {}
+			if isinstance(values, str):
+				try:
+					values = json.loads(values or "{}")
+				except (TypeError, ValueError):
+					values = {}
+			data.append({
+				"web_template": getattr(row, "web_template", None) or getattr(row, "block_type", None) or "",
+				"values": values if isinstance(values, dict) else {},
+				"background_image": getattr(row, "background_image", None) or "",
+				"add_background_image": getattr(row, "add_background_image", None) or 0,
+			})
+
+		return {"success": True, "data": data, "count": len(data)}
+	except Exception as e:
+		frappe.log_error(frappe.get_traceback(), "Get Home Page Builder API")
+		frappe.logger().error("get_home_page_builder failed: %s", str(e))
+		return {"success": True, "data": [], "count": 0}
+
+
+# ---------------------------------------------------------------------------
+# Home page hero (left text, right image; data from Web Page Hero block)
+# ---------------------------------------------------------------------------
+
+def _default_home_hero_slides():
+	"""Default hero content when no Web Page hero data is found."""
+	return [
+		{
+			"welcome_text": "Welcome to Perfection Care",
+			"title": "Elevating care through reliable services",
+			"description": "We connect people with tailored disability support services, ensuring consistent quality, clear communication, and measurable outcomes.",
+			"primary_button_text": "View Services",
+			"primary_button_link": "/services",
+			"secondary_button_text": "Talk to Our Team",
+			"secondary_button_link": "/contact",
+			"image": "",
+			"align": "Left",
+		},
+	]
+
+
+def _slide_from_hero_values(values):
+	"""Build one slide dict from Web Page / Hero block values (Edit Values form)."""
+	if not values or not isinstance(values, dict):
+		return None
+	return {
+		"welcome_text": values.get("welcome_text") or "",
+		"title": values.get("title") or values.get("Title") or "",
+		"description": (values.get("description") or values.get("subtitle") or values.get("Subtitle") or "").strip(),
+		"primary_button_text": values.get("primary_action_label") or values.get("primary_button_text") or values.get("Primary Action Label") or "",
+		"primary_button_link": values.get("primary_action_url") or values.get("primary_button_link") or values.get("Primary Action URL") or "",
+		"secondary_button_text": values.get("secondary_action_label") or values.get("secondary_button_text") or values.get("Secondary Action Label") or "",
+		"secondary_button_link": values.get("secondary_action_url") or values.get("secondary_button_link") or values.get("Secondary Action URL") or "",
+		"image": values.get("image") or values.get("hero_image") or values.get("banner_image") or "",
+		"align": values.get("align") or values.get("Align") or "Left",
+	}
+
+
+@frappe.whitelist(allow_guest=True)
+def get_home_hero():
+	"""
+	Fetch hero content for the Home page. Used by the React frontend.
+	Data source: Web Page "hero" (route home) or "home" – reads web_template_values (Hero block)
+	or custom hero_slides JSON. Returns slides for left text + right image; align from form.
+	"""
+	try:
+		frappe.set_user("Guest")
+		frappe.local.flags.ignore_permissions = True
+
+		# Try Web Page "hero" first (Edit Values URL: /app/web-page/hero), then "home"
+		web_page = None
+		for name in ("hero", "home"):
+			if frappe.db.exists("Web Page", name):
+				web_page = frappe.get_doc("Web Page", name)
+				break
+		if not web_page:
+			names = frappe.get_all("Web Page", filters={"route": "home"}, limit=1)
+			if names:
+				web_page = frappe.get_doc("Web Page", names[0].name)
+
+		if web_page:
+			# 0) Page Building Blocks (page_blocks) – same as get_home_page_builder
+			blocks = getattr(web_page, "page_blocks", None) or getattr(web_page, "blocks", None) or []
+			hero_slides_out = []
+			for row in blocks:
+				wt = (getattr(row, "web_template", None) or getattr(row, "block_type", None) or "").lower()
+				if "hero" not in wt:
+					continue
+				values = getattr(row, "web_template_values", None) or getattr(row, "values", None) or {}
+				if isinstance(values, str):
+					try:
+						values = json.loads(values or "{}")
+					except (TypeError, ValueError):
+						values = {}
+				bg_image = getattr(row, "background_image", None) or ""
+				slide = _slide_from_hero_values(values) if isinstance(values, dict) else None
+				if not slide:
+					slide = {"welcome_text": "", "title": "", "description": "", "primary_button_text": "", "primary_button_link": "", "secondary_button_text": "", "secondary_button_link": "", "image": "", "align": "Left"}
+				if bg_image and not slide.get("image"):
+					slide["image"] = bg_image
+				hero_slides_out.append(slide)
+			if hero_slides_out:
+				return {"success": True, "slides": hero_slides_out}
+
+			# 1) Hero block values from Web Page Builder (web_template_values on Web Page)
+			wtv = getattr(web_page, "web_template_values", None)
+			if wtv:
+				try:
+					if isinstance(wtv, str):
+						wtv = json.loads(wtv) if wtv.strip() else None
+					if isinstance(wtv, dict):
+						slide = _slide_from_hero_values(wtv)
+						if slide and slide.get("title"):
+							return {"success": True, "slides": [slide]}
+				except (TypeError, ValueError):
+					pass
+
+			# 2) Custom hero_slides (JSON array) for multiple slides / slider
+			hero_slides = getattr(web_page, "hero_slides", None)
+			if hero_slides:
+				try:
+					if isinstance(hero_slides, (list, tuple)):
+						slides = list(hero_slides)
+					else:
+						slides = json.loads(hero_slides) if isinstance(hero_slides, str) and hero_slides.strip() else None
+					if slides and isinstance(slides, list) and len(slides) > 0:
+						out = []
+						for s in slides:
+							if isinstance(s, dict):
+								slide = _slide_from_hero_values(s) or {
+									"welcome_text": s.get("welcome_text") or "",
+									"title": s.get("title") or "",
+									"description": s.get("description") or "",
+									"primary_button_text": s.get("primary_button_text") or "",
+									"primary_button_link": s.get("primary_button_link") or "",
+									"secondary_button_text": s.get("secondary_button_text") or "",
+									"secondary_button_link": s.get("secondary_button_link") or "",
+									"image": s.get("image") or "",
+									"align": s.get("align") or "Left",
+								}
+								out.append(slide)
+						if out:
+							return {"success": True, "slides": out}
+				except (TypeError, ValueError):
+					pass
+
+			# 3) Direct custom fields on Web Page (snake_case)
+			slide = _slide_from_hero_values({
+				"title": getattr(web_page, "title", None) or getattr(web_page, "hero_title", None),
+				"subtitle": getattr(web_page, "subtitle", None) or getattr(web_page, "hero_subtitle", None) or getattr(web_page, "description", None),
+				"primary_action_label": getattr(web_page, "primary_action_label", None),
+				"primary_action_url": getattr(web_page, "primary_action_url", None),
+				"secondary_action_label": getattr(web_page, "secondary_action_label", None),
+				"secondary_action_url": getattr(web_page, "secondary_action_url", None),
+				"align": getattr(web_page, "hero_align", None) or getattr(web_page, "align", None),
+				"image": getattr(web_page, "hero_image", None) or getattr(web_page, "banner_image", None),
+			})
+			if slide and slide.get("title"):
+				return {"success": True, "slides": [slide]}
+
+		return {"success": True, "slides": _default_home_hero_slides()}
+	except Exception as e:
+		frappe.log_error(frappe.get_traceback(), "Get Home Hero API")
+		frappe.logger().error("get_home_hero failed: %s", str(e))
+		return {"success": True, "slides": _default_home_hero_slides()}
 
 
 # ---------------------------------------------------------------------------
