@@ -11,6 +11,7 @@ from __future__ import unicode_literals
 import json
 import re
 import frappe
+from frappe.exceptions import DuplicateEntryError
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +91,84 @@ def get_website_settings():
 			"phone_no": "",
 			"email": "",
 		}
+
+
+# ---------------------------------------------------------------------------
+# Services – list & detail APIs for frontend
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist(allow_guest=True)
+def get_services():
+	"""
+	Fetch all Services records for the public website.
+
+	Returns:
+		{
+			"success": True,
+			"data": [
+				{
+					"name": str,
+					"title": str,
+					"subtitle": str,
+					"image": str,
+					"description": str,
+				},
+				...
+			]
+		}
+	"""
+	try:
+		frappe.set_user("Guest")
+		frappe.local.flags.ignore_permissions = True
+
+		services = frappe.get_all(
+			"Services",
+			fields=["name", "title", "subtitle", "image", "description"],
+			order_by="idx asc, modified desc",
+		)
+		return {"success": True, "data": services}
+	except Exception as e:
+		frappe.log_error(frappe.get_traceback(), "Get Services API")
+		frappe.logger().error("get_services failed: %s", str(e))
+		return {"success": False, "data": [], "error": str(e)}
+
+
+@frappe.whitelist(allow_guest=True)
+def get_service(name):
+	"""
+	Fetch a single Service record by name (docname).
+
+	Args:
+		name (str): Docname of the Service (usually same as Title, via autoname field:title).
+	"""
+	try:
+		frappe.set_user("Guest")
+		frappe.local.flags.ignore_permissions = True
+
+		if not name:
+			return {"success": False, "error": "Service name is required"}
+
+		docname = name
+		if not frappe.db.exists("Services", docname):
+			# Fallback: try matching by Title if a plain title string is passed
+			match = frappe.get_all("Services", filters={"title": name}, fields=["name"], limit=1)
+			if not match:
+				return {"success": False, "error": "Service not found"}
+			docname = match[0].name
+
+		doc = frappe.get_doc("Services", docname)
+		data = {
+			"name": doc.name,
+			"title": doc.title,
+			"subtitle": getattr(doc, "subtitle", "") or "",
+			"image": getattr(doc, "image", "") or "",
+			"description": getattr(doc, "description", "") or "",
+		}
+		return {"success": True, "data": data}
+	except Exception as e:
+		frappe.log_error(frappe.get_traceback(), "Get Service API")
+		frappe.logger().error("get_service failed: %s", str(e))
+		return {"success": False, "data": None, "error": str(e)}
 
 
 # ---------------------------------------------------------------------------
@@ -462,3 +541,91 @@ def reset_password(key, new_password):
 		frappe.db.rollback()
 		frappe.log_error(frappe.get_traceback(), "Reset Password API")
 		return {"success": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Contact us – create Lead from enquiry form
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist(allow_guest=True)
+def submit_contact_enquiry(**kwargs):
+	"""
+	Create a Lead from the public contact form.
+
+	Expected kwargs:
+	- first_name (required)
+	- middle_name (optional)
+	- last_name (required)
+	- full_name (optional; will be derived if missing)
+	- email (required)
+	- mobile (required)
+	- country (required)
+	- message (required)
+	"""
+	try:
+		data = kwargs or {}
+
+		required_fields = ["first_name", "last_name", "email", "mobile", "country", "message"]
+		for field in required_fields:
+			if not (data.get(field) or "").strip():
+				return {"success": False, "error": f"{field.replace('_', ' ').title()} is required"}
+
+		first_name = (data.get("first_name") or "").strip()
+		middle_name = (data.get("middle_name") or "").strip()
+		last_name = (data.get("last_name") or "").strip()
+		full_name = (data.get("full_name") or "").strip() or " ".join(
+			[x for x in [first_name, middle_name, last_name] if x]
+		)
+		email = (data.get("email") or "").strip().lower()
+		mobile = (data.get("mobile") or "").strip()
+		country = (data.get("country") or "").strip()
+		message = (data.get("message") or "").strip()
+
+		if not re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", email):
+			return {"success": False, "error": "Invalid email format"}
+
+		frappe.set_user("Guest")
+		frappe.local.flags.ignore_permissions = True
+
+		company = frappe.defaults.get_user_default("Company") or frappe.db.get_single_value(
+			"Global Defaults", "default_company"
+		)
+
+		lead_doc = frappe.get_doc(
+			{
+				"doctype": "Lead",
+				"lead_name": full_name or first_name or "Website Enquiry",
+				"first_name": first_name or None,
+				"last_name": last_name or None,
+				"email_id": email,
+				"mobile_no": mobile,
+				"phone": mobile,
+				"status": "Lead",
+				"territory": "All Territories",
+				"company": company,
+				"country": country
+			}
+		)
+		lead_doc.insert(ignore_permissions=True)
+		frappe.db.commit()
+
+		return {
+			"success": True,
+			"message": "Thank you for your enquiry. Our team will contact you shortly.",
+			"lead_name": lead_doc.name,
+		}
+	except DuplicateEntryError:
+		# Specific, user-friendly message when a Lead with this email already exists
+		frappe.db.rollback()
+		return {
+			"success": False,
+			"error": "An enquiry with this email already exists. Please use a different email or wait for our team to respond.",
+		}
+	except Exception as e:
+		frappe.db.rollback()
+		# Log full traceback on the server, but return a short, safe message to the frontend
+		frappe.log_error(frappe.get_traceback(), "Submit Contact Enquiry API")
+		return {
+			"success": False,
+			"error": "Something went wrong while submitting your enquiry. Please try again later.",
+		}
