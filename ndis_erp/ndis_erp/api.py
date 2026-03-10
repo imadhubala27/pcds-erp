@@ -123,7 +123,7 @@ def get_services():
 
 		services = frappe.get_all(
 			"Services",
-			fields=["name", "title", "subtitle", "image", "description"],
+			fields=["name", "service_name", "title", "subtitle", "image", "description"],
 			order_by="idx asc, modified desc",
 		)
 		return {"success": True, "data": services}
@@ -159,6 +159,7 @@ def get_service(name):
 		doc = frappe.get_doc("Services", docname)
 		data = {
 			"name": doc.name,
+			"service_name": getattr(doc, "service_name", "") or "",
 			"title": doc.title,
 			"subtitle": getattr(doc, "subtitle", "") or "",
 			"image": getattr(doc, "image", "") or "",
