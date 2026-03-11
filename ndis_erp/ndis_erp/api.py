@@ -173,6 +173,104 @@ def get_service(name):
 
 
 # ---------------------------------------------------------------------------
+# Testimonials – list API for frontend
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist(allow_guest=True)
+def get_testimonials():
+	"""
+	Fetch Testimonial records for the public website.
+
+	Fields expected on the Testimonial DocType:
+	- name1, role, image, detail, rating
+	"""
+	try:
+		frappe.set_user("Guest")
+		frappe.local.flags.ignore_permissions = True
+
+		rows = frappe.get_all(
+			"Testimonial",
+			fields=["name", "name1", "role", "image", "detail", "rating"],
+			order_by="idx asc, modified desc",
+		)
+		out = []
+		for r in rows or []:
+			if isinstance(r, dict):
+				out.append({
+					"name": r.get("name"),
+					"name1": r.get("name1") or "",
+					"role": r.get("role") or "",
+					"image": r.get("image") or "",
+					"detail": r.get("detail") or "",
+					"rating": r.get("rating") or 0,
+				})
+			else:
+				out.append({
+					"name": getattr(r, "name", None),
+					"name1": getattr(r, "name1", "") or "",
+					"role": getattr(r, "role", "") or "",
+					"image": getattr(r, "image", "") or "",
+					"detail": getattr(r, "detail", "") or "",
+					"rating": getattr(r, "rating", 0) or 0,
+				})
+		return {"success": True, "data": out}
+	except Exception as e:
+		frappe.log_error(frappe.get_traceback(), "Get Testimonials API")
+		frappe.logger().error("get_testimonials failed: %s", str(e))
+		return {"success": False, "data": [], "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Web Page – content API for frontend (Terms / Privacy)
+# ---------------------------------------------------------------------------
+
+def _web_page_content_by_route(route):
+	"""Return published Web Page content (main_section) by route."""
+	if not route:
+		return None
+	names = frappe.get_all("Web Page", filters={"route": route, "published": 1}, fields=["name"], limit=1)
+	if not names:
+		return None
+	page = frappe.get_doc("Web Page", names[0].name)
+	# Rich Text pages store HTML in main_section; keep fallbacks for older/custom fields.
+	content = getattr(page, "main_section", None) or getattr(page, "content", None) or getattr(page, "body", None) or ""
+	return {
+		"name": page.name,
+		"title": getattr(page, "title", "") or "",
+		"route": getattr(page, "route", "") or route,
+		"content": content or "",
+		"modified": str(getattr(page, "modified", "") or ""),
+	}
+
+
+@frappe.whitelist(allow_guest=True)
+def get_web_page_content(route):
+	"""Fetch published Web Page rich text content by route."""
+	try:
+		frappe.set_user("Guest")
+		frappe.local.flags.ignore_permissions = True
+		data = _web_page_content_by_route(route)
+		if not data:
+			return {"success": False, "error": "Page not found", "data": None}
+		return {"success": True, "data": data}
+	except Exception as e:
+		frappe.log_error(frappe.get_traceback(), "Get Web Page Content API")
+		return {"success": False, "error": str(e), "data": None}
+
+
+@frappe.whitelist(allow_guest=True)
+def get_terms_and_conditions():
+	"""Convenience API for route=terms-and-conditions."""
+	return get_web_page_content("terms-and-conditions")
+
+
+@frappe.whitelist(allow_guest=True)
+def get_privacy_policy():
+	"""Convenience API for route=privacy-policy."""
+	return get_web_page_content("privacy-policy")
+
+
+# ---------------------------------------------------------------------------
 # Home page builder (Page Building Blocks – same as get_home_page_builder?route=home)
 # ---------------------------------------------------------------------------
 
