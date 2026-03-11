@@ -60,16 +60,18 @@ def get_website_settings():
 		default_company = frappe.get_cached_value("Global Defaults", None, "default_company")
 		phone_no = ""
 		email = ""
+		company_description = ""
 		if default_company:
 			company = frappe.get_cached_value(
 				"Company",
 				default_company,
-				["phone_no", "email"],
+				["phone_no", "email", "company_description"],
 				as_dict=True
 			)
 			if company:
 				phone_no = company.get("phone_no") or ""
 				email = company.get("email") or ""
+				company_description = company.get("company_description") or ""
 
 		return {
 			"success": True,
@@ -78,6 +80,7 @@ def get_website_settings():
 			"address": address,
 			"phone_no": phone_no,
 			"email": email,
+			"company_description": company_description,
 		}
 	except Exception as e:
 		frappe.log_error(frappe.get_traceback(), "Get Website Settings API")
@@ -90,6 +93,46 @@ def get_website_settings():
 			"address": "",
 			"phone_no": "",
 			"email": "",
+			"company_description": "",
+		}
+
+
+@frappe.whitelist(allow_guest=True)
+def get_company_description():
+	"""
+	Fetch company_description (rich text / text editor) from the default Company.
+
+	Returns:
+		{
+			"success": True,
+			"company_description": "<html or plain text>",
+		}
+	"""
+	try:
+		frappe.set_user("Guest")
+		frappe.local.flags.ignore_permissions = True
+
+		default_company = frappe.get_cached_value("Global Defaults", None, "default_company")
+		if not default_company:
+			return {"success": False, "company_description": "", "error": "Default company not set"}
+
+		company_description = frappe.get_cached_value(
+			"Company",
+			default_company,
+			"company_description",
+		) or ""
+
+		return {
+			"success": True,
+			"company_description": company_description,
+		}
+	except Exception as e:
+		frappe.log_error(frappe.get_traceback(), "Get Company Description API")
+		frappe.logger().error("get_company_description failed: %s", str(e))
+		return {
+			"success": False,
+			"company_description": "",
+			"error": str(e),
 		}
 
 
@@ -268,6 +311,55 @@ def get_terms_and_conditions():
 def get_privacy_policy():
 	"""Convenience API for route=privacy-policy."""
 	return get_web_page_content("privacy-policy")
+
+
+# ---------------------------------------------------------------------------
+# About Us – single doctype (title, subtitle, description, aboutus_section, leadership)
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist(allow_guest=True)
+def get_about_us():
+	"""
+	Fetch About Us single doctype for the public website.
+	Returns: title, subtitle, description, about_title, image; aboutus_section (cards: title, details);
+	         leadership_title, leadership_subtitle; aboutus_leadership (image, name1, designation, team_detail).
+	"""
+	try:
+		frappe.set_user("Guest")
+		frappe.local.flags.ignore_permissions = True
+
+		doc = frappe.get_single("About Us")
+		aboutus_section = []
+		for row in getattr(doc, "aboutus_section", []) or []:
+			aboutus_section.append({
+				"title": getattr(row, "title", "") or "",
+				"details": getattr(row, "details", "") or "",
+			})
+		aboutus_leadership = []
+		for row in getattr(doc, "aboutus_leadership", []) or []:
+			aboutus_leadership.append({
+				"image": getattr(row, "image", "") or "",
+				"name1": getattr(row, "name1", "") or "",
+				"designation": getattr(row, "designation", "") or "",
+				"team_detail": getattr(row, "team_detail", "") or "",
+			})
+
+		data = {
+			"title": getattr(doc, "title", "") or "",
+			"subtitle": getattr(doc, "subtitle", "") or "",
+			"description": getattr(doc, "description", "") or "",
+			"about_title": getattr(doc, "about_title", "") or "",
+			"image": getattr(doc, "image", "") or "",
+			"aboutus_section": aboutus_section,
+			"leadership_title": getattr(doc, "leadership_title", "") or "",
+			"leadership_subtitle": getattr(doc, "leadership_subtitle", "") or "",
+			"aboutus_leadership": aboutus_leadership,
+		}
+		return {"success": True, "data": data}
+	except Exception as e:
+		frappe.log_error(frappe.get_traceback(), "Get About Us API")
+		frappe.logger().error("get_about_us failed: %s", str(e))
+		return {"success": False, "data": None, "error": str(e)}
 
 
 # ---------------------------------------------------------------------------
