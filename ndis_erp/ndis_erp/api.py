@@ -42,10 +42,28 @@ def test_connection():
 # ---------------------------------------------------------------------------
 
 @frappe.whitelist(allow_guest=True)
+def get_favicon():
+	"""
+	Return the favicon from Website Settings for the React frontend.
+	Returns: { "success": True, "favicon": "<file name or empty>" }
+	"""
+	try:
+		frappe.set_user("Guest")
+		frappe.local.flags.ignore_permissions = True
+		settings = frappe.get_single("Website Settings")
+		favicon = getattr(settings, "favicon", None) or ""
+		return {"success": True, "favicon": favicon}
+	except Exception as e:
+		frappe.log_error(frappe.get_traceback(), "Get Favicon API")
+		frappe.logger().error("get_favicon failed: %s", str(e))
+		return {"success": False, "favicon": "", "error": str(e)}
+
+
+@frappe.whitelist(allow_guest=True)
 def get_website_settings():
 	"""
 	Fetch Website Settings and Company data for the React frontend.
-	Returns: app_logo, footer_logo, address (from Website Settings),
+	Returns: app_logo, footer_logo, favicon, address (from Website Settings),
 	         phone_no, email (from default Company).
 	"""
 	try:
@@ -55,6 +73,7 @@ def get_website_settings():
 		settings = frappe.get_single("Website Settings")
 		app_logo = getattr(settings, "app_logo", None) or getattr(settings, "logo", None) or getattr(settings, "banner_image", None) or ""
 		footer_logo = getattr(settings, "footer_logo", None) or ""
+		favicon = getattr(settings, "favicon", None) or ""
 		address = getattr(settings, "address", None) or ""
 
 		default_company = frappe.get_cached_value("Global Defaults", None, "default_company")
@@ -77,6 +96,7 @@ def get_website_settings():
 			"success": True,
 			"app_logo": app_logo,
 			"footer_logo": footer_logo,
+			"favicon": favicon,
 			"address": address,
 			"phone_no": phone_no,
 			"email": email,
@@ -90,6 +110,7 @@ def get_website_settings():
 			"error": str(e),
 			"app_logo": "",
 			"footer_logo": "",
+			"favicon": "",
 			"address": "",
 			"phone_no": "",
 			"email": "",
